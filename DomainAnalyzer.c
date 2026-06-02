@@ -1,45 +1,13 @@
-/*
- * DomainAnalyzer.c  –  Domain / semantic analysis for AtomC
- *
- * Implements:
- *   • Symbol table (Symbols dynamic array + domain stack)
- *   • Domain analysis pass, woven into a second walk of the token list
- *     (mirrors the syntactic grammar, adding semantic actions)
- *
- * Rules enforced (from AtomC_-_analiza_de_domeniu.pdf):
- *   – Every symbol name must be unique inside its domain
- *   – A struct type used in a variable / parameter declaration must have
- *     been defined earlier
- *   – An array variable must have an explicit size  (int v[] is forbidden
- *     for variables; it is allowed for function parameters)
- *   – A function body does NOT open a new sub-domain on top of the
- *     parameter domain (stmCompound called with newDomain=false for fnDef)
- *   – Every other compound statement opens / closes its own domain
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "compiler.h"
 
-/* ═══════════════════════════════════════════════════════════
- *  Symbol table – data & helpers
- * ═══════════════════════════════════════════════════════════ */
-
-Symbols symTable;   /* global flat table, defined here, declared extern in .h */
-
-/* Current nesting depth: 0 = global, 1 = function, 2+ = nested blocks */
+Symbols symTable;
 static int crtDepth = 0;
 
-/* The function or struct currently being defined (NULL at global scope) */
 static Symbol *owner = NULL;
 
-/* ── Domain stack ────────────────────────────────────────── */
-/*
- * The domain stack tracks, for each scope level, the position in symTable
- * just *before* the first symbol added at that level.  When a domain is
- * dropped we delete every symbol from that saved position onwards.
- */
 #define MAX_DOMAIN_DEPTH 128
 static int domainMarks[MAX_DOMAIN_DEPTH];
 static int domainTop = 0;
@@ -60,7 +28,6 @@ void addSymbolToList(Symbols *list, Symbol *sym) {
     *list->end++ = sym;
 }
 
-/* ── newSymbol ───────────────────────────────────────────── */
 Symbol *newSymbol(const char *name, int cls) {
     Symbol *s = (Symbol *)malloc(sizeof(Symbol));
     if (!s) err("not enough memory");
@@ -69,11 +36,10 @@ Symbol *newSymbol(const char *name, int cls) {
     s->cls   = cls;
     s->depth = crtDepth;
     s->owner = owner;
-    initSymbols(&s->args);   /* covers both args and members (same union) */
+    initSymbols(&s->args);
     return s;
 }
 
-/* ── dupSymbol ───────────────────────────────────────────── */
 Symbol *dupSymbol(const Symbol *src) {
     Symbol *d = (Symbol *)malloc(sizeof(Symbol));
     if (!d) err("not enough memory");
@@ -81,23 +47,11 @@ Symbol *dupSymbol(const Symbol *src) {
     return d;
 }
 
-/* ── addSymbolToDomain ───────────────────────────────────── */
-/*
- * Adds sym to the global flat symbol table and returns it.
- * (The 'domain' parameter mirrors the lab spec signature but we always
- *  add to the global symTable; domain lookup is by depth.)
- */
 Symbol *addSymbolToDomain(Symbols *domain, Symbol *sym) {
     addSymbolToList(domain, sym);
     return sym;
 }
 
-/* ── findSymbolInDomain ──────────────────────────────────── */
-/*
- * Searches 'domain' right-to-left for 'name'.
- * Used to check for redefinitions *within the same scope level*.
- * We only compare symbols whose depth equals crtDepth.
- */
 Symbol *findSymbolInDomain(Symbols *domain, const char *name) {
     if (domain->begin == domain->end) return NULL;
     Symbol **p;
@@ -108,11 +62,6 @@ Symbol *findSymbolInDomain(Symbols *domain, const char *name) {
     return NULL;
 }
 
-/* ── findSymbol ──────────────────────────────────────────── */
-/*
- * Searches the global symTable right-to-left for 'name'.
- * Returns the most recent (innermost) visible definition.
- */
 Symbol *findSymbol(const char *name) {
     if (symTable.begin == symTable.end) return NULL;
     Symbol **p;
@@ -123,34 +72,24 @@ Symbol *findSymbol(const char *name) {
     return NULL;
 }
 
-/* ── pushDomain ──────────────────────────────────────────── */
 void pushDomain(void) {
     if (domainTop >= MAX_DOMAIN_DEPTH) err("domain stack overflow");
-    domainMarks[domainTop++] = (int)(symTable.end - symTable.begin);   /* remember current end index */
+    domainMarks[domainTop++] = (int)(symTable.end - symTable.begin);
     crtDepth++;
 }
 
-/* ── dropDomain ──────────────────────────────────────────── */
-/*
- * Remove every symbol added since the last pushDomain.
- * Symbols that belong to a function's args/members list are kept there
- * (they were dup'd), so we can safely free the flat-table copies.
- */
 void dropDomain(void) {
     if (domainTop <= 0) err("domain stack underflow");
     int markIdx = domainMarks[--domainTop];
     Symbol **mark = symTable.begin + markIdx;
-    /* Free symbols added in this domain */
     Symbol **p;
     for (p = mark; p < symTable.end; p++) {
-        /* Do NOT free s->name – it points into a Token's text field */
         free(*p);
     }
     symTable.end = mark;
     crtDepth--;
 }
 
-/* ── printSymbols ────────────────────────────────────────── */
 static const char *clsName(int cls) {
     switch (cls) {
     case CLS_VAR:     return "VAR";
@@ -181,7 +120,7 @@ static const char *tbName(int tb) {
 
 static void printSymbols(void) {
     Symbol **p;
-    printf("\n=== Symbol table (%d symbols) ===\n",
+    printf("\nSymbol table (%d symbols):\n",
            (int)(symTable.end - symTable.begin));
     for (p = symTable.begin; p < symTable.end; p++) {
         Symbol *s = *p;
@@ -195,13 +134,6 @@ static void printSymbols(void) {
     }
 }
 
-/* ═══════════════════════════════════════════════════════════
- *  Second-pass parser (domain analysis walk)
- *
- *  Mirrors SyntacticAnalyzer.c grammar but adds semantic actions.
- *  We re-use the same token list already built by tokenize().
- * ═══════════════════════════════════════════════════════════ */
-
 static Token *crtTk;
 static Token *consumedTk;
 
@@ -214,7 +146,6 @@ static int consume(int code) {
     return 0;
 }
 
-/* Forward declarations */
 static int da_typeBase(Type *t);
 static int da_arrayDecl(Type *t);
 static int da_varDef(void);
@@ -241,19 +172,8 @@ static int da_exprPostfix(void);
 static int da_exprPostfix1(void);
 static int da_exprPrimary(void);
 
-/* ── da_typeBase ─────────────────────────────────────────── */
-/*
- * typeBase[out Type *t]
- *   INT    { t->tb=TB_INT;    }
- * | DOUBLE { t->tb=TB_DOUBLE; }
- * | CHAR   { t->tb=TB_CHAR;   }
- * | STRUCT ID[tkName]
- *   { t->tb=TB_STRUCT;
- *     t->s=findSymbol(tkName->text);
- *     if(!t->s) tkerr(...); }
- */
 static int da_typeBase(Type *t) {
-    t->n = -1;   /* not an array by default */
+    t->n = -1;
     if (consume(INT))    { t->tb = TB_INT;    return 1; }
     if (consume(DOUBLE)) { t->tb = TB_DOUBLE; return 1; }
     if (consume(CHAR))   { t->tb = TB_CHAR;   return 1; }
@@ -269,12 +189,6 @@ static int da_typeBase(Type *t) {
     return 0;
 }
 
-/* ── da_arrayDecl ────────────────────────────────────────── */
-/*
- * arrayDecl[inout Type *t]: LBRACKET
- *   ( CT_INT[tkSize] { t->n=tkSize->i; } | { t->n=0; } )
- *   RBRACKET
- */
 static int da_arrayDecl(Type *t) {
     if (!consume(LBRACKET)) return 0;
     if (consume(CT_INT)) {
@@ -286,17 +200,6 @@ static int da_arrayDecl(Type *t) {
     return 1;
 }
 
-/* ── da_varDef ───────────────────────────────────────────── */
-/*
- * varDef: typeBase[&t] ID[tkName]
- *   ( arrayDecl[&t]
- *     { if(t.n==0) tkerr(..., "array variable must have a dimension"); }
- *   )?
- *   SEMICOLON
- *   { check uniqueness; create symbol; add to domain }
- *
- * Extended to allow:  typeBase ID (, ID)* ;   (multi-declarator)
- */
 static int da_varDef(void) {
     Token *startTk = crtTk;
     Type t;
@@ -304,8 +207,7 @@ static int da_varDef(void) {
     if (!da_typeBase(&t)) return 0;
     if (!consume(ID)) { crtTk = startTk; return 0; }
 
-    /* Lambda to add one variable given its name token and accumulated type */
-    /* (inline since C89/C99 has no nested functions) */
+
 #define ADD_VAR(tkName_, localType_) do {                               \
     Symbol *var = findSymbolInDomain(&symTable, (tkName_)->text);       \
     if (var) tkerr((tkName_), "symbol redefinition: %s", (tkName_)->text); \
@@ -313,7 +215,7 @@ static int da_varDef(void) {
     var->type = (localType_);                                           \
     if (owner) {                                                        \
         if (owner->cls == CLS_STRUCT) {                                 \
-            var->mem = MEM_LOCAL; /* struct member – no mem class */    \
+            var->mem = MEM_LOCAL;                                       \
             addSymbolToList(&owner->members, dupSymbol(var));           \
         } else {                                                        \
             var->mem = MEM_LOCAL;                                       \
@@ -333,11 +235,10 @@ static int da_varDef(void) {
     }
     ADD_VAR(tkName, localType);
 
-    /* Optional additional declarators: , ID arrayDecl? */
     while (consume(COMMA)) {
         if (!consume(ID)) tkerr(crtTk, "expected identifier after ','");
         tkName    = consumedTk;
-        localType = t;   /* reset to base type, no array */
+        localType = t;
         if (da_arrayDecl(&localType)) {
             if (localType.n == 0 && owner && owner->cls != CLS_FUNC)
                 tkerr(crtTk, "a vector variable must have a specified dimension");
@@ -350,11 +251,6 @@ static int da_varDef(void) {
     return 1;
 }
 
-/* ── da_fnParam ──────────────────────────────────────────── */
-/*
- * fnParam: typeBase[&t] ID[tkName] ( arrayDecl[&t] {t.n=0;} )?
- *   { check uniqueness; create SK_PARAM symbol; add to domain & fn.params }
- */
 static int da_fnParam(void) {
     Token *startTk = crtTk;
     Type t;
@@ -364,7 +260,7 @@ static int da_fnParam(void) {
     Token *tkName = consumedTk;
 
     if (da_arrayDecl(&t)) {
-        t.n = 0;   /* parameters: array size is irrelevant, treat as unsized */
+        t.n = 0;
     }
 
     Symbol *param = findSymbolInDomain(&symTable, tkName->text);
@@ -375,14 +271,12 @@ static int da_fnParam(void) {
     param->type = t;
     addSymbolToDomain(&symTable, param);
 
-    /* Also store a copy in the function's args list */
     if (owner && owner->cls == CLS_FUNC)
         addSymbolToList(&owner->args, dupSymbol(param));
 
     return 1;
 }
 
-/* ── da_stmCompound ──────────────────────────────────────── */
 static int da_stmCompound(int newDomain) {
     if (!consume(LACC)) return 0;
     if (newDomain) pushDomain();
@@ -708,9 +602,6 @@ static void da_unit(void) {
     if (!consume(END)) tkerr(crtTk, "unexpected token at top level");
 }
 
-/* ═══════════════════════════════════════════════════════════
- *  Public entry point
- * ═══════════════════════════════════════════════════════════ */
 void domainAnalysis(int show_output) {
     initSymbols(&symTable);
     crtDepth = 0;
